@@ -1,0 +1,231 @@
+####
+## LIY: regression to the mean
+####
+
+# by Adrien Mierop 14th June 2019)
+
+# set up the simulations --------------------------------------------------
+
+# clear out the environment
+rm(list=ls()) 
+
+# install and/or load relevant packages
+if (!require("pacman")) install.packages("pacman")
+p_load(MASS, data.table, ggplot2, ggforce)
+
+# Selection of the stimuli based on idiosyncratic ratings -----------------
+
+# create one function that creates a databased prone to regression tp the mean
+
+df_RTM <- function(n,extremes,variation_true,noise){
+        
+        true  <- rnorm(n, 5, variation_true) 
+        error_t1 <- rnorm(n,0,noise)            
+        error_t2 <- rnorm(n,0,noise)            
+        
+        df <- data.table(
+                stim = c(1:n),
+                obs_t1 = true + error_t1,
+                obs_t2 = true + error_t2,
+                error_t1,
+                error_t2) 
+        
+        df <- df[order(df[,2] ),]     
+        df[, rank := c(1:n)]          
+        
+        df[rank >= n - n*extremes/100, selection := "positive"] 
+        df[rank <= n*extremes/100, selection := "negative"]     
+        
+        df 
+}
+
+# example
+
+df <- df_RTM(100,10,1,1)
+
+## visualise distribution of errors 
+
+gg_t1 <- ggplot(df, aes(fill=error_t1, y=obs_t1, x=rank)) + 
+        geom_bar( stat="identity")+
+        scale_fill_gradient2(midpoint = 0)+ 
+        theme_bw() 
+gg_t1 
+
+gg_t1 + facet_zoom(x = selection == "positive")
+gg_t1 + facet_zoom(x = selection == "negative") 
+
+# however for obs_t2, although the true values remain the same, the error is now randomly distributed around 0
+gg_t2 <- ggplot(df, aes(fill=error_t2, y=obs_t2, x=rank)) + 
+        geom_bar( stat="identity")+
+        scale_fill_gradient2(midpoint = 0)+ 
+        theme_bw() 
+gg_t2
+
+gg_t2 + facet_zoom(x = selection == "positive")
+gg_t2 + facet_zoom(x = selection == "negative")
+
+
+# if we were to test the change over time as a function of valence, 
+
+# create testable dataframe
+df_change <- data.table(stim = c(df$stim, df$stim),
+                        obs = c(df$obs_t1,df$obs_t2),
+                        selection = c(df$selection,df$selection),
+                        time = rep(c("T1","T2"), each = nrow(df)),
+                        error = c(df$error_t1,df$error_t2))
+df_change[error > 0, err := "positive"]
+df_change[error < 0, err := "negative"]
+
+
+# test the interaction
+summary(aov(obs~time*selection+Error(factor(stim)), data = df_change[!is.na(selection),]))
+
+# plot the time x valence interaction
+ggplot(df_change, aes(x = as.factor(time), y = obs)) + geom_violin(
+        aes(color = selection), trim = FALSE,
+        position = position_dodge(0.9)) +
+        stat_summary(
+                aes(color = selection),
+                fun.data="mean_se",  fun.args = list(mult=1), 
+                geom = "pointrange",  size = 0.7,
+                position = position_dodge(0.9)) +
+        scale_color_manual(values = c("#00AFBB", "#E7B800"))+
+        theme_bw()+
+        labs(x = "Time of measurement")+
+        labs(y = "Observed ratings")
+
+# test the interaction
+
+
+summary(aov(obs~time*selection+Error(factor(stim)), data = df_change[!is.na(selection),]))
+
+
+# it would yield to a significant change, although admittidly, no mental process was at stake here. 
+
+## when is that a problem? 
+
+RTM <- function(n,extremes,variation_true,noise){
+        df <- df_RTM(n,extremes,variation_true,noise)
+        index = (mean(df[selection %in% "positive",obs_t1]) - mean(df[selection %in% "positive",obs_t2])) + (mean(df[selection %in% "negative",obs_t2]) - mean(df[selection %in% "negative",obs_t1]))
+        return(index)
+} 
+
+# test our previous example to have a conceptual basis
+
+RTM(300,15,1,1)
+
+# gives a value of... but it would be different if we generate new data,for instance : 
+
+RTM(300,15,1,1)
+
+# so if we want to approximate the 'true' index of such regression to the mean, we should replicate it several times and then average the results.
+
+# Simulate the difference correlation test D times
+
+# now a function that replicates D times the previous one. to have a better estimation of the index 
+sim.RTM <- function(D, n, extremes, variation_true, noise) {
+        tot <- replicate(D, RTM(n, extremes, variation_true, noise))
+        mean(tot)
+}
+
+sim.RTM(100,300,15,1,1)
+
+# plot the relation between the proportion of extreme and a regression to the mean index (index comme pour EC - papier Mandy)
+# simulations by varying : extreme, variation_true & noise on index of regression to the mean
+
+# simulations depending on set of parameters ------------------------------
+
+paramGrid <- data.table(expand.grid(
+        n = 100, # we fix the number of observations per simulation to 100
+        extremes = seq(from = 5, to = 15,   by = 5), # we vary the proportion of selected extremes
+        variation_true = seq(from = 1,   to = 3,   by = .5), # we vary the true variations, i.e., the signal
+        noise = seq(from = 1, to = 3,   by = .5) # we vary the random errors obtained in T1 and in T2
+))
+
+
+# Run simulation
+D <- 100 # number of simulations per combination of parameters
+set.seed(123) # for replicability
+paramGrid[, RTM_index := sim.RTM(D,n,extremes,variation_true,noise), 1:nrow(paramGrid)] # should take about 10 seconds to be done
+
+start.time <- Sys.time()
+paramGrid[, RTM_index := sim.RTM(D,n,extremes,variation_true,noise), 1:nrow(paramGrid)] # should take about 10 seconds to be done
+
+end.time <- Sys.time()
+time.taken <- end.time - start.time
+time.taken
+
+## plot
+
+gg <- ggplot(paramGrid, aes(x = noise, y = RTM_index, colour = as.factor(variation_true))) +
+        geom_line(alpha = .5) +
+        xlab("Noise") +
+        ylab("Regression to the mean index") +
+        scale_colour_discrete(name = "Signal")
+
+gg + facet_wrap(~ extremes, ncol = 3)
+
+## What could we do?
+
+# we slightly adapt the previously made functions such that now, we rank the observations of time one on the basis of multiple responses
+# where k is the number of replications
+
+df_RTM_k <- function(k,n,extremes,variation_true,noise){
+        
+        ratings  <- rnorm(n, 5, variation_true) 
+        error_t2 <- rnorm(n,0,noise)            
+        
+        df <- data.table(
+                stim = c(1:n),
+                obs_t1 = rowMeans(replicate(k, ratings + rnorm(n,0,noise))), # here is the only difference
+                obs_t2 = ratings + error_t2,
+                error_t2) 
+        
+        df <- df[order(df[,2] ),]     
+        df[, rank := c(1:n)]          
+        
+        df[rank >= n - n*extremes/100, selection := "positive"] 
+        df[rank <= n*extremes/100, selection := "negative"]     
+        
+        df[selection %in% c("positive","negative")] 
+        
+}
+
+# we adapt the two other functions so it can accomodate the new parameter
+RTM_k <- function(k,n,extremes,variation_true,noise){
+        df <- df_RTM_k(k,n,extremes,variation_true,noise)
+        index = (mean(df[selection %in% "positive",obs_t1]) - mean(df[selection %in% "positive",obs_t2])) + (mean(df[selection %in% "negative",obs_t2]) - mean(df[selection %in% "negative",obs_t1]))
+        return(index)
+} 
+
+sim.RTM_k <- function(D, k, n, extremes, variation_true, noise) {
+        tot <- replicate(D, RTM_k(k, n, extremes, variation_true, noise))
+        mean(tot)
+}
+
+# and now let's see how many replications in time one we need to decrease the regression to the mean
+
+paramGrid <- data.table(expand.grid(
+        k=c(1,2,5,10,100),
+        n = 100,
+        extremes = 10,
+        variation_true = seq(from = 1,   to = 3,   by = 1),
+        noise = seq(from = 1, to = 3,   by = 1)
+))
+
+# Run simulation
+D <- 100 # number of simulations
+set.seed(123) # for replicability
+
+paramGrid[, RTM_index := sim.RTM_k(D,k,n,extremes,variation_true,noise), 1:nrow(paramGrid)]
+
+## plot
+
+gg <- ggplot(paramGrid, aes(x = noise, y = RTM_index, colour = as.factor(k))) +
+        geom_line(alpha = .5) +
+        xlab("Noise") +
+        ylab("Regression to the mean index") +
+        scale_colour_discrete(name = "Observations in T1")
+
+
+gg + facet_wrap(~ variation_true, ncol = 3)
